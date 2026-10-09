@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+  <title>AIRA · Memory graph</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body { background: #fff; color: #343434; font-family: Arial, Helvetica, sans-serif; }
+    canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+    canvas.dragging { cursor: grabbing; }
+    header { position: fixed; top: 26px; left: 30px; pointer-events: none; padding: 10px 16px 12px 0; background: linear-gradient(90deg, #ffffffee 85%, #ffffff00); }
+    .eyebrow { font-size: 10px; letter-spacing: 2.4px; color: #939393; margin-bottom: 7px; }
+    h1 { font-size: 20px; font-weight: 400; letter-spacing: -.5px; margin: 0; }
+    #counts { font-size: 11px; color: #999; margin-top: 8px; }
+    .tools { position: fixed; right: 28px; bottom: 28px; display: flex; background: #fff; border: 1px solid #e6e6e6; border-radius: 9px; box-shadow: 0 3px 15px #00000005; overflow: hidden; }
+    button { appearance: none; border: 0; background: transparent; color: #555; font: inherit; font-size: 18px; min-width: 40px; height: 40px; cursor: pointer; }
+    button:hover { background: #f4f4f4; }
+    button:focus-visible { outline: 2px solid #555; outline-offset: -3px; }
+    #reset { border-left: 1px solid #eee; font-size: 11px; padding: 0 13px; }
+    footer { position: fixed; left: 30px; bottom: 28px; color: #aaa; font-size: 10px; letter-spacing: .3px; pointer-events: none; }
+    #detail { position: fixed; left: 30px; bottom: 58px; max-width: min(420px, calc(100vw - 60px)); padding: 12px 16px; border: 1px solid #e9e9e9; border-radius: 8px; background: #fffffff5; pointer-events: none; }
+    #detail[hidden] { display: none; }
+    #detail strong { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; overflow-wrap: anywhere; }
+    #detail span { font-size: 11px; color: #999; }
+    @media (max-width: 600px) { header { top: 16px; left: 18px; } footer { left: 18px; bottom: 18px; max-width: 180px; line-height: 1.6; } .tools { right: 18px; bottom: 18px; } #detail { left: 18px; bottom: 65px; } }
+  </style>
+</head>
+<body>
+  <canvas id="graph" role="img" aria-label="Illustrative memory graph with connected topic nodes. Drag to pan, scroll to zoom, and select a node to highlight its connections.">Illustrative memory graph. All labels and connections are sample data.</canvas>
+  <header><div class="eyebrow">AIRA / MEMORY ATLAS</div><h1>Memory graph</h1><div id="counts"></div></header>
+  <div id="detail" hidden aria-live="polite"><strong id="node-name"></strong><span id="node-info"></span></div>
+  <footer>Sample graph · visual only<br>Drag to explore · scroll to zoom</footer>
+  <div class="tools" aria-label="Graph controls"><button id="out" aria-label="Zoom out">−</button><button id="in" aria-label="Zoom in">+</button><button id="reset">Reset view</button></div>
+  <script>
+    // Standalone illustrative data. No imports, API requests, or application storage.
+    const canvas = document.getElementById('graph'), ctx = canvas.getContext('2d');
+    const detail = document.getElementById('detail');
+    const rooms = ['Identity', 'Academic', 'Career', 'Projects', 'Decisions', 'People', 'Devices', 'Preferences', 'Goals', 'Commitments', 'Routine', 'Personal', 'Places', 'Learning', 'Timeline'];
+    const topics = [
+      ['Personal-Profile', 'Creative-Identity', 'Strengths-and-Values', 'Long-Term-Intent', 'Personal-Context', 'Communication-Style'],
+      ['Computer-Science', 'Semester-Notes', 'Research-Methods', 'Coursework-Archive', 'Academic-Roadmap', 'Study-Strategy'],
+      ['AI-Engineer-Roadmap', 'Career-Development', 'Interview-Preparation', 'Portfolio-Strategy', 'Role-Preferences', 'Opportunity-Notes'],
+      ['AIRA-Memory-Palace', 'Agent-Runtime', 'Voice-Interaction', 'Context-Retrieval', 'Project-Nimbus', 'Prototype-Architecture'],
+      ['Decision-Journal', 'Learning-from-Feedback', 'Architecture-Tradeoffs', 'Build-vs-Buy', 'Experiment-Review', 'Prioritization-Framework'],
+      ['Collaborator-Notes', 'Mentor-Feedback', 'Team-Context', 'Conversation-Highlights', 'Shared-Interests', 'Relationship-Map'],
+      ['Development-Workspace', 'Hardware-Inventory', 'Local-Environment', 'Device-Preferences', 'Tooling-Setup', 'System-Configuration'],
+      ['Simple-Explanations', 'Visual-Learning', 'Step-by-Step-Reasoning', 'Writing-Preferences', 'Design-Principles', 'Focus-Environment'],
+      ['Skill-Development', 'Career-Milestones', 'Weekly-Priorities', 'Personal-Growth', 'Project-Launch', 'Learning-Targets'],
+      ['Weekly-Plan', 'Follow-Up-Notes', 'Project-Commitments', 'Shared-Tasks', 'Upcoming-Reviews', 'Next-Actions'],
+      ['Deep-Work-Blocks', 'Morning-Routine', 'Study-Sessions', 'Weekly-Reflection', 'Focus-Habits', 'Activity-Notes'],
+      ['Personal-Interests', 'Creative-Practice', 'Daily-Reflections', 'Favorite-Ideas', 'Inspiration-Archive', 'Life-Notes'],
+      ['Hyderabad', 'Campus-Context', 'Workspace-Notes', 'Travel-Archive', 'Location-Preferences', 'Places-to-Explore'],
+      ['Agent-Memory-Architecture', 'Semantic-Search', 'Knowledge-Organization', 'Progressive-Disclosure', 'Human-in-the-Loop', 'Context-Engineering'],
+      ['Project-Milestones', 'Learning-Journey', 'Academic-Events', 'Career-Timeline', 'Build-History', 'Session-Archive']
+    ];
+    let seed = 73421;
+    function random() { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; }
+    const nodes = [], edges = [], pairs = new Set();
+    function connect(a, b) { if (a === b) return; const key = [Math.min(a,b), Math.max(a,b)].join('-'); if (!pairs.has(key)) { pairs.add(key); edges.push([a,b]); } }
+    for (let r = 0; r < rooms.length; r++) {
+      const angle = r * 2.39996, spread = Math.sqrt(r / 14);
+      const cx = Math.cos(angle) * 380 * spread, cy = Math.sin(angle) * 280 * spread;
+      const base = nodes.length;
+      nodes.push({ x: cx, y: cy, radius: 8 + random()*3, label: rooms[r] + '-Memory', room: rooms[r], hub: true });
+      for (let j = 0; j < 9; j++) {
+        const a = random()*Math.PI*2, distance = 35 + random()*115;
+        const label = j < 6 ? topics[r][j] : 'MEM-' + String(r*9+j+1).padStart(3,'0') + '-' + ['Context-Note', 'Related-Concept', 'Source-Fragment'][j-6];
+        nodes.push({ x: cx + Math.cos(a)*distance, y: cy + Math.sin(a)*distance, radius: 3.5 + random()*3, label, room: rooms[r], hub: false });
+        connect(base, nodes.length-1);
+        if (j > 0) connect(nodes.length-1, base+1+Math.floor(random()*j));
+      }
+    }
+    // A dense central web and a quieter fringe, like a note-taking graph view.
+    for (let i = 0; i < 180; i++) connect(Math.floor(random()*150), Math.floor(random()*150));
+    for (let i = 0; i < 38; i++) {
+      const a = (i/38)*Math.PI*2, radius = .85 + random()*.23;
+      nodes.push({ x: Math.cos(a)*740*radius, y: Math.sin(a)*425*radius, radius: 3.5+random()*2, room: rooms[i%15], hub: false,
+        label: ['SKILL', 'README', 'workflow-notes', 'source-index', 'reference-template', 'learning-log', 'review-checklist', 'context-map', 'project-notes'][i%9] });
+      if (i % 4 === 0) connect(nodes.length-1, (i*13)%150);
+    }
+    nodes.forEach(n => n.neighbors = new Set());
+    edges.forEach(([a,b]) => { nodes[a].neighbors.add(b); nodes[b].neighbors.add(a); });
+    document.getElementById('counts').textContent = `${nodes.length} nodes · ${edges.length} connections · 15 clusters`;
+    let width, height, scale = 1, panX = 0, panY = 0, hovered = -1, selected = -1, pointer = null, dirty = true;
+    const fit = () => Math.min(width/1640, height/980);
+    function resize() { width = innerWidth; height = innerHeight; const dpr = Math.min(devicePixelRatio || 1, 2); canvas.width = width*dpr; canvas.height = height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); dirty = true; }
+    function point(n) { const s = fit()*scale; return { x: width/2 + panX + n.x*s, y: height/2 + panY + n.y*s }; }
+    function hit(x,y) { let best = -1, distance = 16; nodes.forEach((n,i) => { const p=point(n), d=Math.hypot(x-p.x,y-p.y); if (d < distance) { distance=d; best=i; } }); return best; }
+    function draw() {
+      if (!dirty) return;
+      dirty = false; ctx.clearRect(0,0,width,height);
+      const active = selected >= 0 ? selected : hovered;
+      const related = i => active < 0 || i === active || nodes[active].neighbors.has(i);
+      edges.forEach(([a,b]) => { const p=point(nodes[a]), q=point(nodes[b]), highlighted=a===active||b===active;
+        ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.strokeStyle=highlighted ? '#737373' : active>=0 ? '#f0f0f0' : '#dedee1'; ctx.lineWidth=highlighted ? 1.1 : .65; ctx.stroke(); });
+      nodes.forEach((n,i) => { const p=point(n), r=n.radius*Math.max(.75, Math.min(1.4,fit()*scale));
+        ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fillStyle=i===active ? '#171717' : related(i) ? '#5e5e5e' : '#dedede'; ctx.fill();
+        if (i===active) { ctx.beginPath(); ctx.arc(p.x,p.y,r+5,0,Math.PI*2); ctx.strokeStyle='#bcbcbc'; ctx.lineWidth=1; ctx.stroke(); }
+        if (width < 600 && !n.hub && !related(i)) return;
+        if (width < 600 && active < 0 && !n.hub) return;
+        ctx.font=`${n.hub ? 12 : 11}px Arial`; ctx.textAlign='center'; ctx.fillStyle=i===active ? '#333' : active>=0 ? related(i) ? '#777' : '#ececec' : n.hub ? '#aaa' : '#c5c5c8';
+        ctx.fillText(n.label,p.x,p.y+r+15);
+      });
+    }
+    function render() { draw(); requestAnimationFrame(render); }
+    function zoom(factor, x=width/2, y=height/2) { const next=Math.max(.45,Math.min(3.5,scale*factor)), ratio=next/scale; panX=(panX-(x-width/2))*ratio+(x-width/2); panY=(panY-(y-height/2))*ratio+(y-height/2); scale=next; dirty=true; }
+    function select(i) { selected=i; detail.hidden=i<0; if (i>=0) { document.getElementById('node-name').textContent=nodes[i].label.replaceAll('-', ' '); document.getElementById('node-info').textContent=`${nodes[i].room} · ${nodes[i].neighbors.size} related nodes`; } dirty=true; }
+    canvas.addEventListener('pointerdown', e => { pointer={id:e.pointerId, x:e.clientX,y:e.clientY, startX:e.clientX,startY:e.clientY}; canvas.setPointerCapture(e.pointerId); canvas.classList.add('dragging'); });
+    canvas.addEventListener('pointermove', e => { if (pointer) { panX+=e.clientX-pointer.x; panY+=e.clientY-pointer.y; pointer.x=e.clientX; pointer.y=e.clientY; dirty=true; } else { const next=hit(e.clientX,e.clientY); if (next!==hovered) { hovered=next; dirty=true; } } });
+    canvas.addEventListener('pointerup', e => { if (!pointer) return; if (Math.hypot(e.clientX-pointer.startX,e.clientY-pointer.startY)<5) select(hit(e.clientX,e.clientY)); pointer=null; canvas.classList.remove('dragging'); });
+    canvas.addEventListener('pointercancel', () => { pointer=null; canvas.classList.remove('dragging'); });
+    canvas.addEventListener('pointerleave', () => { hovered=-1; dirty=true; });
+    canvas.addEventListener('wheel', e => { e.preventDefault(); zoom(Math.exp(-e.deltaY*.001),e.clientX,e.clientY); }, {passive:false});
+    document.getElementById('in').onclick=()=>zoom(1.25);
+    document.getElementById('out').onclick=()=>zoom(.8);
+    document.getElementById('reset').onclick=()=>{ scale=1; panX=panY=0; hovered=-1; select(-1); };
+    document.addEventListener('keydown', e => { if (e.key==='Escape') select(-1); });
+    addEventListener('resize',resize); resize(); render();
+  </script>
+</body>
+</html>

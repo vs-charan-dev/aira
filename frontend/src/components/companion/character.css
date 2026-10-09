@@ -1,0 +1,14 @@
+.aira-character { width: 100%; height: auto; overflow: visible; display: block; }
+.aira-body { transform-origin: 240px 300px; animation: aira-breathe 4.8s ease-in-out infinite; }
+.aira-character--listening .aira-body { animation: aira-listen 2.4s ease-in-out infinite; }
+.aira-character--thinking .aira-body { animation: aira-think 3.2s ease-in-out infinite; }
+.aira-character--capturing .aira-body { animation: aira-capture 3s ease-in-out infinite; }
+.aira-character--error .aira-body { animation: none; }
+@keyframes aira-capture { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px) rotate(.7deg); } }
+@keyframes aira-breathe { 0%,100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-3px) scale(1.006); } }
+@keyframes aira-listen { 0%,100% { transform: rotate(-2deg); } 50% { transform: rotate(1deg) translateY(-3px); } }
+@keyframes aira-think { 0%,100% { transform: rotate(2deg); } 50% { transform: rotate(-1deg) translateY(-2px); } }
+.aira-palace-companion { position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: 190px; z-index: 35; pointer-events: none; }
+.aira-palace-companion a { pointer-events: auto; display: block; text-align: center; width: fit-content; margin: -4px auto 0; font: 500 10px Inter,sans-serif; color: #304892; background: #ffffffdf; border: 1px solid #d4e0ff; border-radius: 20px; padding: 3px 10px; }
+@media(max-width: 900px) { .aira-palace-companion { bottom: 85px; width: 135px; } }
+@media(prefers-reduced-motion: reduce) { .aira-body { animation: none !important; } }

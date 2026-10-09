@@ -1,0 +1,601 @@
+/**
+ * Returns the singleton AIRAWebSocket instance for the current user.
+ * Creates and connects it on first call; tears it down on sign-out.
+ *
+ * T109: Also wires response_chunk, response_complete, and artifact_recall
+ * messages into voiceStore and AudioPlayback.
+ */
+import { useEffect, useRef } from 'react';
+import { AIRAWebSocket } from '../services/websocket';
+import { WS_BASE_URL } from '../config/api';
+import { useAuthStore } from '../stores/authStore';
+import { useCaptureStore } from '../stores/captureStore';
+import { usePalaceStore } from '../stores/palaceStore';
+import { useCameraStore } from '../stores/cameraStore';
+import { useVoiceStore } from '../stores/voiceStore';
+import { AudioPlayback, stopAllPlayback } from '../services/audioPlayback';
+import { useEnrichmentStore } from '../stores/enrichmentStore';
+import { useTransitionStore } from '../stores/transitionStore';
+import { stopVoiceSession, releaseAudioHold, handleVoiceSessionEnded } from './useVoice';
+import { stopCapture } from './useCapture';
+import { useCompanionStore } from '../stores/companionStore';
+
+let _instance: AIRAWebSocket | null = null;
+/** Singleton AudioPlayback shared across listeners (reset on disconnect). */
+let _playback: AudioPlayback | null = null;
+/** Track whether listeners have been wired to prevent duplicates. */
+let _listenersWired = false;
+let _listenerUnsubs: Array<() => void> = [];
+/** Cancellable timer for clearing highlightedArtifactIds — prevents stale clears from racing. */
+let _highlightArtifactTimer: ReturnType<typeof setTimeout> | null = null;
+
+function getInstance(userId: string, getToken: () => Promise<string>): AIRAWebSocket {
+  if (!_instance) {
+    _instance = new AIRAWebSocket(WS_BASE_URL, userId, getToken);
+  }
+  return _instance;
+}
+
+function wireListeners(ws: AIRAWebSocket): void {
+  if (_listenersWired) return;
+  _listenersWired = true;
+
+  _playback = new AudioPlayback();
+
+  _listenerUnsubs = [
+    ws.on('transport_closed', () => {
+      stopVoiceSession();
+      stopCapture();
+      if (useCaptureStore.getState().status === 'processing') useCaptureStore.getState().setStatus('complete');
+      useCompanionStore.getState().update({ thinking: false, pendingMode: null, notice: 'Connection closed. Activate AIRA to reconnect.' });
+    }),
+    // capture_session_started/ended, capture_text/user_text, capture_ack, capture_audio
+    // are all handled by useCaptureWS (mounted in PalacePage). Only handle the
+    // messages that useCaptureWS does NOT cover.
+    ws.on('capture_complete', (msg) => {
+      if (msg.sessionId !== useCaptureStore.getState().sessionId) return;
+      useCaptureStore.getState().setSummary(msg.summary);
+      useCaptureStore.getState().setStatus('complete');
+    }),
+    ws.on('capture_screenshot_request' as any, async (msg: any) => {
+      const stream = useCaptureStore.getState().activeStream;
+      const sessionId: string = msg.sessionId;
+      if (!stream) {
+        ws.sendScreenshotResponse(sessionId, '');
+        return;
+      }
+      try {
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) { ws.sendScreenshotResponse(sessionId, ''); return; }
+        const imageCapture = new (window as any).ImageCapture(videoTrack);
+        const bitmap: ImageBitmap = await imageCapture.grabFrame();
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        ws.sendScreenshotResponse(sessionId, dataUrl.split(',')[1]);
+      } catch (err) {
+        console.error('[Screenshot] Frame capture failed:', err);
+        ws.sendScreenshotResponse(sessionId, '');
+      }
+    }),
+    ws.on('room_suggestion', (msg) => {
+      useCaptureStore.getState().setRoomSuggestion(msg);
+    }),
+    ws.on('palace_update', (msg) => {
+      const palaceStore = usePalaceStore.getState();
+      const newRooms: Array<{ id: string; position: { x: number; y: number; z: number } }> = [];
+
+      msg.changes.roomsAdded?.forEach((r) => {
+        palaceStore.addRoom({
+          id: r.id,
+          name: r.name,
+          position: r.position,
+          dimensions: { w: 8, d: 8, h: 4 },
+          style: r.style as never,
+          connections: [],
+          artifactCount: 0,
+        });
+        newRooms.push({ id: r.id, position: r.position });
+        // Show room creation in the capture panel if a capture session is active
+        if (useCaptureStore.getState().status === 'capturing') {
+          useCaptureStore.getState().addToolEvent(`Room created: ${r.name}`, 'create_room');
+        }
+      });
+
+      msg.changes.lobbyDoorsAdded?.forEach((door: { roomId: string; wallPosition: string; doorIndex: number }) => {
+        const currentLayout = palaceStore.layout;
+        if (currentLayout) {
+          palaceStore.setLayout({
+            ...currentLayout,
+            lobbyDoors: [
+              ...currentLayout.lobbyDoors.filter((d) => d.roomId !== door.roomId),
+              door as never,
+            ],
+          });
+        }
+      });
+
+      msg.changes.roomsRemoved?.forEach((id: string) => {
+        const wasCurrentRoom = palaceStore.currentRoomId === id;
+        palaceStore.removeRoom(id);
+        if (wasCurrentRoom) {
+          useTransitionStore.getState().startTransition('exit', () => {
+            usePalaceStore.getState().setCurrentRoomId(null);
+            useCameraStore.getState().exitOverview();
+            useCameraStore.getState().teleport({ x: 6, y: 1.7, z: 6 });
+            useCameraStore.getState().lookAt({ x: 6, y: 1.7, z: 0 });
+          });
+        }
+      });
+      msg.changes.artifactsRemoved?.forEach((id: string) =>
+        palaceStore.removeArtifact(id)
+      );
+      msg.changes.artifactsAdded?.forEach((a) => {
+        palaceStore.addArtifact({
+          id: a.id,
+          roomId: a.roomId,
+          type: a.type as never,
+          position: a.position,
+          visual: a.visual as never,
+          title: a.title,
+          summary: a.summary,
+          sourceMediaUrl: a.sourceMediaUrl,
+          color: a.color,
+          wall: a.wall,
+          capturedAt: new Date().toISOString(),
+        } as never);
+        // Reveal synthesis result overlay when the mind map artifact arrives
+        if (a.type === 'synthesis' && a.sourceMediaUrl) {
+          useVoiceStore.getState().setSynthesisImageUrl(a.sourceMediaUrl);
+          useVoiceStore.getState().setSynthesisState('done');
+          useVoiceStore.getState().setToolActivity(null);
+        }
+      });
+      msg.changes.artifactsUpdated?.forEach((patch: { id: string;[key: string]: unknown }) =>
+        palaceStore.updateArtifact(patch.id, patch as never)
+      );
+
+      // Collect non-synthesis artifacts that we should navigate to
+      const navigableArtifacts = (msg.changes.artifactsAdded ?? []).filter(
+        (a) => a.type !== 'synthesis'
+      );
+
+      // If new rooms were added and we're in the lobby (and no artifact to jump to directly),
+      // fly the camera to face the last new room's lobby door so the user sees it appear.
+      if (newRooms.length > 0 && palaceStore.currentRoomId === null && navigableArtifacts.length === 0) {
+        const target = newRooms[newRooms.length - 1];
+        const allRooms = [...palaceStore.rooms, { id: target.id, position: target.position }];
+        const roomIndex = Math.max(allRooms.findIndex(r => r.id === target.id), 0);
+        const WALL_CYCLE = ['north', 'east', 'south', 'west'] as const;
+        const LOBBY_SIZE = 12;
+        const wallPosition = WALL_CYCLE[roomIndex % 4];
+        const doorIndex = Math.floor(roomIndex / 4);
+        const wallCount = allRooms.filter((_, i) => WALL_CYCLE[i % 4] === wallPosition).length;
+        const offset = (doorIndex + 1) * (LOBBY_SIZE / (wallCount + 1)) - LOBBY_SIZE / 2;
+
+        let facingX = 0, facingZ = 0, doorCX = 0, doorCZ = 0;
+        switch (wallPosition) {
+          case 'south':
+            facingX = LOBBY_SIZE / 2 + offset; facingZ = LOBBY_SIZE - 3;
+            doorCX = LOBBY_SIZE / 2 + offset; doorCZ = LOBBY_SIZE; break;
+          case 'east':
+            facingX = LOBBY_SIZE - 3; facingZ = LOBBY_SIZE / 2 + offset;
+            doorCX = LOBBY_SIZE; doorCZ = LOBBY_SIZE / 2 + offset; break;
+          case 'west':
+            facingX = 3; facingZ = LOBBY_SIZE / 2 + offset;
+            doorCX = 0; doorCZ = LOBBY_SIZE / 2 + offset; break;
+          default: // north
+            facingX = LOBBY_SIZE / 2 + offset; facingZ = 3;
+            doorCX = LOBBY_SIZE / 2 + offset; doorCZ = 0; break;
+        }
+
+        useCameraStore.getState().flyTo(
+          { x: facingX, y: 1.7, z: facingZ },
+          { x: doorCX, y: 1.25, z: doorCZ },
+        );
+        // Briefly highlight the door so it's obvious which one is new
+        palaceStore.setHighlightedLobbyDoorRoomId(target.id);
+        setTimeout(() => usePalaceStore.getState().setHighlightedLobbyDoorRoomId(null), 3000);
+      }
+
+      // Navigate into the room and fly to the newly created artifact
+      if (navigableArtifacts.length > 0) {
+        const a = navigableArtifacts[navigableArtifacts.length - 1];
+        const currentState = usePalaceStore.getState();
+        const room = currentState.rooms.find((r) => r.id === a.roomId);
+        if (room) {
+          const worldX = room.position.x + a.position.x;
+          const worldZ = room.position.z + a.position.z;
+          const STAND_DIST = 2.0;
+          let standX = worldX;
+          let standZ = worldZ;
+          if (a.wall === 'north' || a.position.z < 0.6) standZ = worldZ + STAND_DIST;
+          else if (a.wall === 'south' || a.position.z > room.dimensions.d - 0.6) standZ = worldZ - STAND_DIST;
+          else if (a.wall === 'west' || a.position.x < 0.2) standX = worldX + STAND_DIST;
+          else if (a.wall === 'east' || a.position.x > room.dimensions.w - 0.2) standX = worldX - STAND_DIST;
+          else standZ = worldZ + STAND_DIST;
+
+          const flyToArtifact = () => {
+            useCameraStore.getState().flyTo(
+              { x: standX, y: 1.7, z: standZ },
+              { x: worldX, y: a.position.y, z: worldZ },
+            );
+          };
+
+          if (currentState.currentRoomId !== a.roomId) {
+            useTransitionStore.getState().startTransition('enter', () => {
+              usePalaceStore.getState().setCurrentRoomId(a.roomId);
+              useCameraStore.getState().exitOverview();
+              const entryX = room.position.x + room.dimensions.w / 2;
+              const entryZ = room.position.z + room.dimensions.d - 0.5;
+              useCameraStore.getState().teleport({ x: entryX, y: 1.7, z: entryZ });
+              flyToArtifact();
+            });
+          } else {
+            flyToArtifact();
+          }
+        }
+      }
+    }),
+    ws.on('seeding_started' as any, () => {
+      usePalaceStore.getState().setIsSeeding(true);
+    }),
+    ws.on('seeding_complete' as any, () => {
+      usePalaceStore.getState().setIsSeeding(false);
+    }),
+    ws.on('error', (msg) => {
+      console.error('[WS error]', msg.code, msg.message);
+      if (msg.code === 'UNAUTHORIZED') {
+        stopVoiceSession();
+        stopCapture();
+        useAuthStore.getState().setUser(null);
+        return;
+      }
+      if (msg.code === 'LIVE_SESSION_FAILED') {
+        if (msg.sessionId && msg.sessionId !== useVoiceStore.getState().sessionId) return;
+        handleVoiceSessionEnded('start_timeout', 'Voice could not connect after one recovery attempt. Check your connection and activate AIRA again.');
+        return;
+      }
+      if (msg.code === 'NO_GEMINI_KEY' || msg.code === 'CAPTURE_SESSION_FAILED') {
+        stopVoiceSession();
+        stopCapture();
+        useVoiceStore.getState().setError(msg.message);
+        useCaptureStore.getState().setError(msg.message);
+        useCaptureStore.getState().setStatus('error');
+      }
+    }),
+
+    ws.on('live_mode_stopped', (msg) => {
+      // Mode switches already stop local input. Ignore an old connection's
+      // notice while its replacement is connecting.
+      if (msg.reason === 'mode_switch') return;
+      const reasons: Record<string, string> = {
+        idle_limit: 'Session stopped after inactivity. Tap to reconnect.',
+        duration_limit: 'Session time limit reached. Tap to reconnect.',
+        estimated_cost_limit: 'Estimated Live cost limit reached. Tap to reconnect.',
+        connection_error: 'Live connection closed. Tap to reconnect.',
+        audio_send_timeout: 'Voice upload stalled. Check your connection and activate AIRA again.',
+      };
+      const label = reasons[msg.reason] ?? 'Session stopped';
+      if (msg.mode === 'recall') {
+        if(msg.sessionId && msg.sessionId!==useVoiceStore.getState().sessionId) return;
+        handleVoiceSessionEnded(msg.reason, label);
+        _playback?.stop();
+      } else if (msg.sessionId === useCaptureStore.getState().sessionId) {
+        stopCapture();
+        useCaptureStore.getState().setStatus('complete');
+        useCaptureStore.getState().addToolEvent(label, 'session_end');
+      }
+    }),
+
+    // ── Live streaming voice wiring ─────────────────────────────────────
+    ws.on('live_session_started', (msg) => {
+      const voiceStore = useVoiceStore.getState();
+      if(msg.sessionId && msg.sessionId!==voiceStore.sessionId) return;
+      if (voiceStore.status === 'connecting') {
+        voiceStore.setStatus('connected');
+        voiceStore.addToolEvent('Session Started', 'session_start');
+      }
+    }),
+    ws.on('live_session_status',msg => {
+      const current=useVoiceStore.getState();
+      if(msg.active || msg.sessionId!==current.sessionId) return;
+      const reason=msg.reason || 'connection_error';
+      const labels: Record<string,string> = {
+        idle_limit: 'Voice paused after 2 minutes without conversation. Activate AIRA to continue.',
+        duration_limit: 'Voice reached its session time limit. Activate AIRA to continue.',
+        estimated_cost_limit: 'Voice reached the configured estimated cost limit.',
+        stopped: 'Voice stopped.',
+      };
+      handleVoiceSessionEnded(reason, labels[reason] || 'Voice connection ended after one recovery attempt. Activate AIRA again; desktop jobs remain on the task board.');
+    }),
+    ws.on('live_audio', (msg) => {
+      useCompanionStore.getState().update({ thinking: false });
+      const voiceStore = useVoiceStore.getState();
+      if (voiceStore.status === 'disconnected' || voiceStore.status === 'error') return;
+      if (voiceStore.status !== 'responding') {
+        voiceStore.setStatus('responding');
+      }
+      if (_playback) {
+        void _playback.enqueue(msg.audioChunk);
+      }
+    }),
+    ws.on('live_text', (msg) => {
+      const voiceStore = useVoiceStore.getState();
+      if (voiceStore.status === 'disconnected' || voiceStore.status === 'error') return;
+      if (voiceStore.status !== 'responding') {
+        voiceStore.setStatus('responding');
+      }
+      voiceStore.appendTranscript(msg.text);
+      voiceStore.appendAIRAText(msg.text);
+    }),
+    ws.on('live_user_text', (msg) => {
+      useCompanionStore.getState().update({ thinking: true });
+      useVoiceStore.getState().appendUserText(msg.text);
+    }),
+    ws.on('live_interrupted', () => {
+      const voiceStore = useVoiceStore.getState();
+      if (voiceStore.status === 'disconnected' || voiceStore.status === 'error') return;
+      useCompanionStore.getState().update({ thinking: false });
+      stopAllPlayback();
+      releaseAudioHold();
+      voiceStore.resetTranscript();
+      voiceStore.setStatus('connected');
+    }),
+    ws.on('live_turn_complete', () => {
+      useCompanionStore.getState().update({ thinking: false });
+      // Release the greeting audio hold (idempotent after the first turn).
+      releaseAudioHold();
+      setTimeout(() => {
+        // Re-read current status inside the timeout to avoid stale closure.
+        const current = useVoiceStore.getState();
+        if (current.status === 'responding') {
+          current.setStatus('connected');
+        }
+      }, 2500);
+    }),
+    ws.on('live_tool_call', (msg) => {
+      // Add inline event to conversation log
+      useVoiceStore.getState().addToolEvent(msg.label, msg.tool, msg.payload.memoryAnswer?.references.map(m => ({ id: m.id, room: m.room })));
+      // Also write to capture panel if a capture session is active
+      if (useCaptureStore.getState().status === 'capturing') {
+        useCaptureStore.getState().addToolEvent(msg.label, msg.tool);
+      }
+      // Show activity toast (skip auto-dismiss for synthesis — SynthesisOverlay handles it)
+      useVoiceStore.getState().setToolActivity({ tool: msg.tool, label: msg.label });
+      if (msg.tool === 'synthesize_room') {
+        useVoiceStore.getState().setSynthesisState('loading');
+        useVoiceStore.getState().setSynthesisImageUrl(null);
+      } else {
+        setTimeout(() => useVoiceStore.getState().setToolActivity(null), 4_000);
+      }
+
+      // Navigate to room: cinematic fly to lobby door → highlight → enter room
+      if (msg.payload.navigation?.enterRoom) {
+        const nav = msg.payload.navigation;
+        const isLobby = nav.targetRoomId === 'lobby';
+        const palaceStore = usePalaceStore.getState();
+        const currentRoomId = palaceStore.currentRoomId;
+        const targetRoomId = isLobby ? null : nav.targetRoomId;
+        const { startTransition } = useTransitionStore.getState();
+
+        if (currentRoomId !== targetRoomId) {
+          const WALL_CYCLE = ['north', 'east', 'south', 'west'] as const;
+          const LOBBY_SIZE = 12;
+
+          // Find which lobby wall/index this room's door is on (mirrors PalaceCanvas fallback logic).
+          // Always reads fresh store state — this may be called up to ~2 s after the WS event.
+          const getLobbyDoor = (roomId: string) => {
+            const freshStore = usePalaceStore.getState();
+            const fromLayout = freshStore.layout?.lobbyDoors?.find(d => d.roomId === roomId);
+            if (fromLayout) return fromLayout;
+            const idx = Math.max(freshStore.rooms.findIndex(r => r.id === roomId), 0);
+            return { wallPosition: WALL_CYCLE[idx % 4], doorIndex: Math.floor(idx / 4) };
+          };
+
+          // Room entry position based on which lobby wall the door is on (mirrors handleEnterRoom in PalaceCanvas)
+          const getRoomEntry = (room: typeof palaceStore.rooms[0], wallPosition: string) => {
+            const { w, d } = room.dimensions;
+            const rx = room.position.x, rz = room.position.z;
+            switch (wallPosition) {
+              case 'south': return { entryX: rx + w / 2, entryZ: rz + 0.5, lookX: rx + w / 2, lookZ: rz + d };
+              case 'east': return { entryX: rx + 0.5, entryZ: rz + d / 2, lookX: rx + w, lookZ: rz + d / 2 };
+              case 'west': return { entryX: rx + w - 0.5, entryZ: rz + d / 2, lookX: rx, lookZ: rz + d / 2 };
+              default: return { entryX: rx + w / 2, entryZ: rz + d - 0.5, lookX: rx + w / 2, lookZ: rz };
+            }
+          };
+
+          const enterTarget = () => {
+            usePalaceStore.getState().setHighlightedLobbyDoorRoomId(null);
+            startTransition(isLobby ? 'exit' : 'enter', () => {
+              // Use fresh store state — enterTarget may run up to ~2 s after the WS snapshot.
+              const freshStore = usePalaceStore.getState();
+              freshStore.setCurrentRoomId(targetRoomId);
+              useCameraStore.getState().exitOverview();
+              if (!isLobby) {
+                const room = freshStore.rooms.find(r => r.id === nav.targetRoomId);
+                if (room) {
+                  const ld = getLobbyDoor(nav.targetRoomId);
+                  const { entryX, entryZ, lookX, lookZ } = getRoomEntry(room, ld.wallPosition);
+                  useCameraStore.getState().teleport({ x: entryX, y: 1.7, z: entryZ });
+                  useCameraStore.getState().lookAt({ x: lookX, y: 1.7, z: lookZ });
+                  useCameraStore.getState().setFov(100);
+                }
+              } else {
+                useCameraStore.getState().teleport({ x: 6, y: 1.7, z: 6 });
+                useCameraStore.getState().lookAt({ x: 6, y: 1.7, z: 0 });
+                useCameraStore.getState().setFov(75);
+              }
+            });
+          };
+
+          if (currentRoomId !== null && !isLobby) {
+            // Currently in a room: exit room immediately, then fly cinematically to lobby facing the door
+            const ld = getLobbyDoor(nav.targetRoomId);
+            const idx = ld.doorIndex ?? 0;
+            const doorCount = usePalaceStore.getState().layout?.lobbyDoors.filter(d => d.wallPosition === ld.wallPosition).length || Math.ceil(usePalaceStore.getState().rooms.length / 4);
+            const offset = (idx + 1) * (LOBBY_SIZE / (doorCount + 1)) - LOBBY_SIZE / 2;
+
+            // Camera stand position in lobby (3 units from the wall — enough to see the full door)
+            let facingX = 0, facingZ = 0, doorCX = 0, doorCZ = 0;
+            switch (ld.wallPosition) {
+              case 'south':
+                facingX = LOBBY_SIZE / 2 + offset; facingZ = LOBBY_SIZE - 3;
+                doorCX = LOBBY_SIZE / 2 + offset; doorCZ = LOBBY_SIZE; break;
+              case 'east':
+                facingX = LOBBY_SIZE - 3; facingZ = LOBBY_SIZE / 2 + offset;
+                doorCX = LOBBY_SIZE; doorCZ = LOBBY_SIZE / 2 + offset; break;
+              case 'west':
+                facingX = 3; facingZ = LOBBY_SIZE / 2 + offset;
+                doorCX = 0; doorCZ = LOBBY_SIZE / 2 + offset; break;
+              default: // north
+                facingX = LOBBY_SIZE / 2 + offset; facingZ = 3;
+                doorCX = LOBBY_SIZE / 2 + offset; doorCZ = 0; break;
+            }
+
+            // Leave the room immediately so lobby collision/rendering takes over
+            palaceStore.setCurrentRoomId(null);
+            useCameraStore.getState().exitOverview();
+            // Narrow FOV for a cinematic door-framing effect
+            useCameraStore.getState().setFov(65);
+
+            // Smooth cinematic glide through the palace to the lobby door
+            useCameraStore.getState().flyTo(
+              { x: facingX, y: 1.7, z: facingZ },
+              { x: doorCX, y: 1.25, z: doorCZ },
+              () => {
+                // Arrived in lobby facing the door — highlight it, it opens, then enter
+                if (usePalaceStore.getState().currentRoomId !== null) return;
+                usePalaceStore.getState().setHighlightedLobbyDoorRoomId(nav.targetRoomId);
+                setTimeout(enterTarget, 1500);
+              }
+            );
+          } else {
+            // Already in lobby (or navigating to lobby): single transition
+            enterTarget();
+          }
+        }
+
+        if (nav.highlightArtifacts?.length) {
+          palaceStore.setHighlightedArtifacts(nav.highlightArtifacts);
+          if (_highlightArtifactTimer !== null) clearTimeout(_highlightArtifactTimer);
+          _highlightArtifactTimer = setTimeout(() => { usePalaceStore.getState().setHighlightedArtifacts([]); _highlightArtifactTimer = null; }, 5_000);
+        }
+        if (nav.selectedArtifactId) {
+          palaceStore.setAgentSelectedArtifactId(nav.selectedArtifactId);
+        }
+      }
+
+      // Horizontal strafe: push mobileMovement left or right for long enough to feel meaningful
+      if (msg.payload.navigation?.moveHorizontal) {
+        const dir = msg.payload.navigation.moveHorizontal === 'left' ? -1 : 1;
+        useCameraStore.getState().setMobileMovement({ x: dir, z: 0 });
+        setTimeout(() => useCameraStore.getState().setMobileMovement({ x: 0, z: 0 }), 1400);
+      }
+
+      // Cinematic Highlight: Move camera + Open popup + glow
+      if (msg.payload.artifactId) {
+        const artifactId = msg.payload.artifactId;
+        usePalaceStore.getState().setHighlightedArtifacts([artifactId]);
+        if (_highlightArtifactTimer !== null) clearTimeout(_highlightArtifactTimer);
+        _highlightArtifactTimer = setTimeout(() => { usePalaceStore.getState().setHighlightedArtifacts([]); _highlightArtifactTimer = null; }, 5_000);
+        usePalaceStore.getState().setAgentSelectedArtifactId(artifactId);
+
+        // If the highlighted artifact is a synthesis map, open the overlay directly
+        const allArtifacts = Object.values(usePalaceStore.getState().artifacts).flat();
+        const target = allArtifacts.find((a) => a.id === artifactId);
+        if (target?.visual === 'synthesis_map' && target.sourceMediaUrl) {
+          useVoiceStore.getState().setSynthesisImageUrl(target.sourceMediaUrl);
+          useVoiceStore.getState().setSynthesisState('done');
+        }
+      }
+
+      // Server-initiated session end
+      if (msg.tool === 'end_session') {
+        stopVoiceSession();
+        _instance?.sendLiveSessionEnd();
+      }
+
+      // Map view toggle
+      if (msg.payload.toggleMapView) {
+        const { isOverviewMode, enterOverview, exitOverview } = useCameraStore.getState();
+        const { startTransition } = useTransitionStore.getState();
+        startTransition('enter', () => {
+          if (isOverviewMode) exitOverview();
+          else enterOverview();
+        });
+      }
+    }),
+
+    ws.on('live_memory_loaded' as any, (msg: any) => {
+      useVoiceStore.getState().addToolEvent(msg.label, 'memory_search');
+    }),
+
+    // ── Legacy: artifact_recall ──────────────────────────────────────────
+    ws.on('artifact_recall', (msg) => {
+      const voiceStore = useVoiceStore.getState();
+      voiceStore.setNarration(msg.content);
+      voiceStore.setStatus('responding');
+      if (msg.content.voiceNarration && _playback) {
+        void _playback.enqueue(msg.content.voiceNarration);
+      }
+    }),
+
+    // ── T126: Enrichment update — drives crystal_orb_pulse animation ─────
+    ws.on('enrichment_update', (msg) => {
+      useEnrichmentStore.getState().addEnrichment(msg.artifactId, {
+        id: msg.enrichment.id,
+        sourceName: msg.enrichment.sourceName,
+        sourceUrl: msg.enrichment.sourceUrl,
+        preview: msg.enrichment.preview,
+        images: msg.enrichment.images,
+      });
+    }),
+  ];
+}
+
+function teardownListeners(): void {
+  _listenerUnsubs.forEach((fn) => fn());
+  _listenerUnsubs = [];
+  _playback?.stop();
+  _playback = null;
+  _listenersWired = false;
+}
+
+export function useWS(): AIRAWebSocket {
+  const { user } = useAuthStore();
+  const wsRef = useRef<AIRAWebSocket | null>(null);
+
+  useEffect(() => {
+    if (!user) {
+      stopVoiceSession();
+      stopCapture();
+      teardownListeners();
+      _instance?.disconnect();
+      _instance = null;
+      wsRef.current = null;
+      return;
+    }
+
+    const getToken = () => user.getIdToken();
+    const ws = getInstance(user.uid, getToken);
+    wsRef.current = ws;
+    ws.connect();
+    wireListeners(ws);
+
+    return () => {
+      // Only tear down on actual unmount of last consumer (sign-out)
+      // The listeners persist as long as the singleton WS lives
+    };
+  }, [user]);
+
+  if (!wsRef.current && user) {
+    const getToken = () => user.getIdToken();
+    wsRef.current = getInstance(user.uid, getToken);
+  }
+
+  // Return a no-op stub when not authenticated so callers don't need to null-check
+  return wsRef.current ?? (new Proxy({} as AIRAWebSocket, { get: () => () => undefined }));
+}

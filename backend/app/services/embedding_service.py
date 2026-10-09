@@ -1,0 +1,30 @@
+import numpy as np
+from google.genai import types
+
+from app.core.gemini import EMBEDDING_MODEL, get_genai_client
+
+
+async def get_embedding(text: str, api_key: str | None = None) -> list[float]:
+    """Return a 768-dimensional embedding via Gemini API."""
+    client = get_genai_client(api_key)
+    response = await client.aio.models.embed_content(
+        model=EMBEDDING_MODEL,
+        contents=text,
+        config=types.EmbedContentConfig(output_dimensionality=768),
+    )
+    # Gemini API returns a single `embedding` object (not a list)
+    emb = getattr(response, "embedding", None) or response.embeddings[0]
+    values = np.asarray(emb.values, dtype=np.float32)
+    norm = np.linalg.norm(values)
+    return (values / norm).tolist() if norm else values.tolist()
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two embedding vectors. Returns 0.0 for zero vectors."""
+    va = np.array(a, dtype=np.float32)
+    vb = np.array(b, dtype=np.float32)
+    norm_a = float(np.linalg.norm(va))
+    norm_b = float(np.linalg.norm(vb))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return float(np.dot(va, vb) / (norm_a * norm_b))

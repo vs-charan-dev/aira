@@ -1,0 +1,30 @@
+// Fixed VS Code process task. Executes only the recognized local invoice tests.
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
+const root = path.resolve(__dirname, '..');
+const project = path.join(root, 'data', 'projects', 'invoice-showcase');
+const runId = process.argv[2];
+if (!/^[a-f0-9]{32}$/.test(runId || '')) throw new Error('Invalid invoice verification run.');
+const version = () => crypto.createHash('sha256').update(fs.readFileSync(path.join(project, 'invoice.js'))).digest('hex');
+const sourceVersion = version();
+const env = {};
+for (const name of ['SystemRoot','WINDIR','PATH','PATHEXT','ComSpec']) if (process.env[name]) env[name] = process.env[name];
+env.TEMP = env.TMP = path.join(root,'.cache','tmp');
+env.HOME = env.USERPROFILE = path.join(root,'.cache','coding','home');
+console.log('AIRA invoice verification: 5 original checks + 3 new regression checks');
+console.log('node --test --test-reporter=tap invoice.test.js invoice.regression.test.js\n');
+const run = spawnSync(process.execPath, ['--test','--test-reporter=tap','invoice.test.js','invoice.regression.test.js'],
+  {cwd:project,env,encoding:'utf8',timeout:25000,maxBuffer:200000,windowsHide:true});
+const output = (run.stdout || '') + (run.stderr || '');
+process.stdout.write(output);
+const verified = run.status === 0 && /^# tests 8\s*$/m.test(output) && /^# pass 8\s*$/m.test(output) && /^# fail 0\s*$/m.test(output) && sourceVersion === version();
+console.log(verified ? '\nAll tests passed (8/8).' : '\nVerification failed. Inspect the test output.');
+const result = {runId,sourceVersion,verified,exitCode:run.status,tests:8,passed:verified ? 8 : null};
+const directory = path.join(root,'.cache','invoice-terminal');
+fs.mkdirSync(directory,{recursive:true});
+const target = path.join(directory,runId+'.json');
+fs.writeFileSync(target+'.tmp',JSON.stringify(result));
+fs.renameSync(target+'.tmp',target);
+process.exitCode = verified ? 0 : 1;

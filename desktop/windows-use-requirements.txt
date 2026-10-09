@@ -1,0 +1,5 @@
+# Separate E-drive environment; do not install these into the voice/backend venv.
+windows-use==0.8.1
+uiautomation==2.0.29
+# Windows-Use imports every provider; Mistral 3.x removed its expected import.
+mistralai==1.9.11

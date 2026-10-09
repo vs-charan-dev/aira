@@ -1,0 +1,706 @@
+Build a Memory Palace module inside AIRA using the following information.
+
+GOAL
+The Memory Palace represents long-term personal memory visually as different rooms.
+
+The user should be able to:
+1. Enter a room and browse memories.
+2. Search memories using natural language.
+3. Ask questions such as:
+   "What package am I targeting?"
+   "What did I learn from my previous hackathons?"
+   "Which city do I prefer for jobs?"
+   "Why do I prefer simple architectures?"
+4. Receive an answer generated only from relevant stored memories.
+5. See exactly which memories were used to generate the answer.
+
+IMPORTANT:
+Do not store the following information as one giant document.
+
+Every fact, preference, decision, goal, person, project, event or lesson should be stored as an individual memory object.
+
+Each memory should have approximately this structure:
+
+{
+  "id": "CAREER-001",
+  "room": "Career Room",
+  "category": "career_goal",
+  "title": "Target Role",
+  "memory": "Charan wants to become an AI Engineer or AI FTE.",
+  "importance": "high",
+  "tags": ["career", "AI", "jobs"],
+  "source": "Memory Palace Seed",
+  "created_at": "2026-10-09"
+}
+
+IDs should follow the room.
+
+Examples:
+IDENTITY-001
+ACADEMIC-001
+CAREER-001
+PROJECT-001
+DECISION-001
+PERSON-001
+DEV-001
+PREFERENCE-001
+GOAL-001
+COMMITMENT-001
+ROUTINE-001
+PERSONAL-001
+PLACE-001
+LEARNING-001
+TIMELINE-001
+
+When multiple memories support an answer, return all supporting references.
+
+Example:
+
+User:
+"Where do I want to work and what package am I targeting?"
+
+AIRA:
+"You currently prefer working in Hyderabad and your target minimum package is approximately ₹24 LPA.
+
+Memory References:
+Career Room → CAREER-002
+Career Room → CAREER-003"
+
+If the information does not exist in memory, DO NOT invent an answer.
+
+Say:
+"I don't currently have a memory about that."
+
+==================================================
+ROOM 1 — THE LOBBY / IDENTITY
+==================================================
+
+Q: What is my name?
+A: My name is Sai Charan.
+
+Q: What do people usually call me?
+A: People usually call me Charan.
+
+Q: Where do I live?
+A: I live in Shamshabad, Hyderabad.
+
+Q: What am I currently doing?
+A: I am currently a student pursuing my B.Tech.
+
+Q: Which college do I study in?
+A: I study at Vignan Institute of Technology and Science.
+
+Q: Which branch am I studying?
+A: I am studying Mechanical Engineering.
+
+Q: Which year am I in?
+A: I am in the final year of my B.Tech.
+
+Q: How would I describe my personality?
+A: I am introverted, but friendly. I spend a large amount of my time working in front of my laptop.
+
+Q: What am I passionate about?
+A: I love developing software, building different projects and experimenting with technology. AI is a field that I am particularly passionate about.
+
+Q: What are the three major priorities in my life right now?
+A:
+1. Improve my health and get into good physical shape.
+2. Increase my streams of income.
+3. Build ambitious projects that can create meaningful impact, especially in AI.
+
+Q: What should AIRA understand about my personality?
+A: I am friendly, technically curious and ambitious. I prefer concepts to be explained clearly, visually and using simple words.
+
+Q: What are three things I fundamentally value?
+A: Health, wealth and relationships.
+
+==================================================
+ROOM 2 — ACADEMIC ROOM
+==================================================
+
+Q: What degree am I pursuing?
+A: B.Tech in Mechanical Engineering.
+
+Q: What academic subject is currently important to me?
+A: SPJP is currently an important subject for me.
+
+Q: What am I learning outside my Mechanical Engineering curriculum?
+A: I am studying DevOps and MLOps even though they are not part of my core Mechanical Engineering curriculum.
+
+Q: When are my upcoming examinations?
+A: Important mid and semester examinations are expected during November. Exact dates are not currently stored.
+
+Q: Am I preparing for GATE?
+A: No.
+
+Q: Do I currently want to prepare for government examinations?
+A: No. I am not interested in pursuing government examinations at present.
+
+Q: What is my current placement status?
+A: I have already secured an internship and I am currently working there.
+
+Q: What do I think about aptitude and CRT classes?
+A: I enjoy the aptitude and CRT classes conducted by my college.
+
+Q: Do I have an unfinished academic project?
+A: Yes. I have an unfinished final-year major project that still needs to be completed.
+
+Q: What is my academic goal for the next six months?
+A: I want to increase my CGPA from approximately 8.8 to above 9.0.
+
+Q: Why do I want to improve my CGPA?
+A: I believe a CGPA above 9 will create a stronger impression when recruiters look at my resume.
+
+==================================================
+ROOM 3 — CAREER ROOM
+==================================================
+
+Q: What career role am I targeting?
+A: I want to become an AI Engineer or work in a closely related full-time AI role.
+
+Q: Which city do I prefer for my career?
+A: Hyderabad.
+
+Q: What package am I targeting?
+A: My target minimum package is approximately ₹24 LPA.
+
+Q: Do I want to spend my entire career coding?
+A: No.
+
+Q: How do I see my career evolving?
+A: Initially I expect to be hands-on and do technical work. As I gain experience, I want to move toward leadership, management and consulting roles where I can manage projects and people in addition to understanding the technical work.
+
+Q: What technical areas am I currently trying to understand?
+A: I am currently learning how DevOps works and how applications and AI systems are integrated into real production environments.
+
+Q: What type of companies would I like to target?
+A: Major technology companies and MNCs such as Microsoft and Google.
+
+Q: What is one of my biggest career uncertainties?
+A: I am unsure whether I should build my career in a multidisciplinary area combining Mechanical Engineering and software, or move completely into software and AI.
+
+Q: Why am I considering completely moving toward software?
+A: One of the reasons is that I currently perceive much higher salary opportunities in pure software and AI roles.
+
+Q: Why am I still interested in multidisciplinary work?
+A: I believe combining domains such as Mechanical Engineering and software has significant future potential, even though the current salary opportunities may not always be as attractive.
+
+==================================================
+ROOM 4 — PROJECTS LAB
+==================================================
+
+Q: What is AIRA?
+A: AIRA stands for Autonomy In Real Applications. It is being designed as a personal AI Chief of Staff that can understand intentions, remember context, coordinate tools and agents, monitor work and continue tasks across time.
+
+Q: What was my observability project?
+A: I built an AI-oriented observability and incident-response concept that could analyze system telemetry, identify problems, reason about possible root causes and assist with fixing and verifying issues.
+
+Q: What industrial automation experience do I have?
+A: I worked on a PLC-based industrial automation project as part of my internship experience.
+
+Q: What is my grocery/e-commerce project?
+A: I am involved in building an e-commerce / quick-commerce-related product for an Australian client, including grocery comparison and delivery-related functionality.
+
+Q: What autonomous-agent project did I build?
+A: I built a self-improving autonomous-agent system designed to learn from mistakes, feedback and environmental outcomes.
+
+Q: Does the underlying LLM modify itself in that project?
+A: No. The base LLM does not modify its weights. The improvement happens in the harness and surrounding system, which changes behaviour based on previous mistakes and feedback.
+
+Q: Which project am I particularly proud of?
+A: I am particularly proud of the self-improving autonomous agent because it adapts its surrounding workflow based on mistakes and environmental feedback.
+
+Q: Do I have confidential projects?
+A: Yes, but confidential project details should not be stored or exposed in the Memory Palace.
+
+Q: What is an important principle regarding my confidential work?
+A: AIRA must not invent, request unnecessarily or reveal confidential project information.
+
+==================================================
+ROOM 5 — DECISION VAULT / LESSONS
+==================================================
+
+Q: What cloud technology decision have I made?
+A: For one of my use cases, I preferred Cloudflare Workers instead of directly starting with AWS because I felt it provided a simpler and more suitable approach for that workload.
+
+Q: What is one of the biggest lessons I learned from hackathons?
+A: Building a technically strong product is not sufficient if the presentation is weak.
+
+Q: What mistake did my team make in previous hackathons?
+A: We concentrated heavily on the product and did not give enough attention to presentation strategy, communication and how clearly the judges understood the solution.
+
+Q: What do I currently believe about product versus presentation in hackathons?
+A: My personal belief is that the product may account for roughly 40% of success, while presentation, confidence, clarity and team contribution can account for the remaining 60%.
+
+Q: What have I learned about team presentations?
+A: Every team member should understand the project, contribute confidently and know what they are expected to say.
+
+Q: What have I learned about complexity?
+A: A technically complex solution is not automatically better.
+
+Q: What type of architecture do I currently prefer for hackathons?
+A: I prefer simple architectures that judges can quickly understand.
+
+Q: Why do I prefer simpler solutions?
+A: I have experienced situations where a technically complicated project became difficult for evaluators to understand and digest, reducing the impact of the work.
+
+Q: What should AIRA remind me when I begin overengineering something?
+A: Simplicity and clarity often create more impact than unnecessary complexity.
+
+==================================================
+ROOM 6 — PEOPLE ROOM
+==================================================
+
+Q: Who are some of my closest friends?
+A: Hrullekh, Ronith and Sheetal are among my close friends and best friends.
+
+Q: Who are Srinitya and Priya to me?
+A: Srinitya and Priya are close friends whom I consider like sisters, and they have also been teammates with me in different hackathons.
+
+Q: Who is Vinay?
+A: Vinay joined the team working on AIRA.
+
+Q: How many clients am I currently working with?
+A: I am currently working with approximately four clients, including work connected to my internship.
+
+Q: Which teachers had a significant influence on me?
+A: My physics and mathematics teachers during school had a significant impact on me.
+
+Q: Which teachers from my 11th and 12th studies particularly influenced me?
+A: Rajwant Sir and Sachin Sir had a significant influence on me.
+
+Q: Who is one of my major inspirations?
+A: Virat Kohli.
+
+Q: Why does Virat Kohli inspire me?
+A: I admire the amount of work, discipline and effort he has put into reaching his level of performance.
+
+Q: What do I normally do when I face a difficult problem?
+A: I frequently use AI to discuss the problem, understand it and determine possible next steps.
+
+==================================================
+ROOM 7 — DEVELOPER WORKSPACE
+==================================================
+
+Q: Which operating system do I use?
+A: Windows.
+
+Q: What are my laptop specifications?
+A: My laptop has an Intel Core i5 11th-generation processor, 16 GB RAM, a 512 GB SSD and Intel Iris Xe graphics.
+
+Q: What phone do I use?
+A: Motorola Edge 60 Fusion.
+
+Q: What is my primary development editor?
+A: VS Code.
+
+Q: What terminal tools do I use?
+A: I use PowerShell and a tool I refer to as Herder for terminal/project workflows.
+
+Q: Which coding agents do I prefer?
+A: Claude Code and Codex.
+
+Q: Which general AI assistant do I frequently use?
+A: ChatGPT.
+
+Q: Which content-generation tools do I sometimes use?
+A: I sometimes use Gamma and Google's/Gemini's tools for image, video and music generation.
+
+Q: Do I use GitHub?
+A: Yes.
+
+Q: What do I use for remote development?
+A: Tailscale together with Termux is part of my remote-development workflow.
+
+Q: What development approaches do I prefer?
+A: I like product-driven development and test-driven development depending on the project.
+
+Q: Which programming languages and frameworks do I use?
+A: This information has not yet been specifically stored in memory. Do not invent it.
+
+==================================================
+ROOM 8 — AI & INTERACTION PREFERENCES
+==================================================
+
+Q: How should technical concepts usually be explained to me?
+A: Prefer simple analogies, visual explanations and step-by-step guidance.
+
+Q: Do I want every step dumped at once?
+A: No. I generally prefer guidance one step at a time.
+
+Q: Do I prefer short or detailed answers?
+A: I appreciate detailed answers when the situation requires them, but I dislike unnecessarily long walls of text. Information should be structured, direct and easy to consume.
+
+Q: What frustrates me about some AI systems?
+A: They can feel slow and often explain too much instead of helping complete the actual work.
+
+Q: When should AIRA act automatically?
+A: AIRA may act automatically when an action is low-risk and reversible.
+
+Q: Give an example of an action AIRA may perform autonomously.
+A: Writing or modifying code can often be performed autonomously because the changes can usually be reviewed or reverted.
+
+Q: When should AIRA request permission?
+A: Before executing irreversible or high-impact actions.
+
+Q: Give examples of actions that require permission.
+A: Production changes, sending emails, destructive operations and similar actions that cannot easily be undone.
+
+Q: What is the general autonomy principle?
+A: Reversible actions can have greater autonomy. Irreversible actions should require explicit human approval.
+
+==================================================
+ROOM 9 — GOALS OBSERVATORY
+==================================================
+
+Q: What do I need to do this week?
+A: I currently have two hackathons that I want to attend.
+
+Q: What important things are happening this month?
+A: I have a Delhi trip and approximately two projects that I want to complete.
+
+Q: What is an important three-month goal?
+A: I want to develop a product that can eventually create passive income.
+
+Q: What is my broader financial objective?
+A: I want stable income streams and would like to reach a point where my financial stability does not depend completely on having a traditional job.
+
+Q: Do I currently make detailed one-year plans?
+A: No. I generally do not like planning that far ahead in detail.
+
+Q: What are my three major current priorities?
+A:
+1. Improve my health and physical condition.
+2. Increase my income streams.
+3. Build ambitious and impactful AI projects.
+
+Q: What is one of my career goals?
+A: Become an AI Engineer or move into an AI-focused technical career.
+
+Q: What is my salary goal?
+A: Approximately ₹24 LPA or above.
+
+Q: Where do I want to work?
+A: Hyderabad.
+
+==================================================
+ROOM 10 — COMMITMENTS & DEADLINES
+==================================================
+
+Q: What major commitments are currently known?
+A:
+- Two hackathons are planned for this week.
+- A Delhi trip is planned.
+- Two projects need to be completed this month.
+- A final-year major project remains unfinished.
+- Important academic examinations are expected during November.
+
+Q: Are exact dates stored for all these commitments?
+A: No. Exact dates should be requested or added when known rather than invented.
+
+==================================================
+ROOM 11 — ROUTINE & ENERGY ROOM
+==================================================
+
+Q: What time do I normally wake up?
+A: Around 7:00 AM.
+
+Q: What time do I normally sleep?
+A: Around 11:00 PM.
+
+Q: What conditions usually create my most productive days?
+A: Good sleep, relatively light food and avoiding excessive phone use at night.
+
+Q: What tends to cause my afternoon slump?
+A: Eating heavy food often causes a noticeable afternoon slump.
+
+Q: How many productive hours do I usually have?
+A: Approximately five to six productive hours on a typical day, although this can vary significantly.
+
+Q: What are my normal college hours?
+A: Approximately 8:45 AM to 3:30 PM.
+
+Q: Which day is normally free?
+A: Sunday.
+
+Q: Do I sometimes have additional holidays?
+A: Yes. The second and fourth Saturdays may sometimes be holidays.
+
+Q: Why do some of my personal plans fail?
+A: I usually commit strongly to my own plans, but social plans or interruptions involving friends sometimes disrupt the schedule.
+
+Q: How should AIRA respond to that?
+A: AIRA should remind me appropriately and help me replan instead of simply marking the plan as failed.
+
+==================================================
+ROOM 12 — PERSONAL PREFERENCES
+==================================================
+
+Q: What conversation style do I prefer?
+A: Friendly.
+
+Q: What communication style do I dislike?
+A: Excessively long explanations that take too long to reach the point.
+
+Q: What type of humour do I like?
+A: Light, situational and self-deprecating humour that does not hurt other people.
+
+Q: How should AIRA react when my plans are unrealistic?
+A: AIRA should challenge me and bring me back to realistic constraints rather than simply agreeing with everything.
+
+Q: What motivates me?
+A: Having meaningful work and challenging things to build gives me motivation.
+
+Q: When am I more likely to procrastinate?
+A: When I am not actively engaged in a task or when the task begins to feel very difficult.
+
+Q: Do I prefer flexible or strict planning?
+A: Generally flexible planning, but strict planning can be useful when the situation requires it.
+
+Q: What should AIRA know about my personality?
+A: I am introverted but friendly, ambitious, highly interested in technology and also enjoy humour.
+
+Q: What are three foundational things I value?
+A: Health, wealth and relationships.
+
+==================================================
+ROOM 13 — PLACES & EXPERIENCES
+==================================================
+
+Q: Where is my college?
+A: Hyderabad.
+
+Q: Which city do I prefer for work?
+A: Hyderabad.
+
+Q: Which city do I travel to relatively frequently?
+A: Delhi.
+
+Q: Do I have upcoming travel?
+A: Yes. A Delhi trip is planned for the near future.
+
+Q: What notable technology-related place/event have I attended?
+A: I have attended an event associated with Microsoft. Exact event details are not currently stored.
+
+Q: What city do I personally associate with love?
+A: Agra.
+
+==================================================
+ROOM 14 — LEARNING LIBRARY
+==================================================
+
+Q: What am I currently learning?
+A: DevOps and MLOps.
+
+Q: What production topic do I often have difficulty remembering?
+A: Database management concepts at production scale.
+
+Q: What would I like AIRA to help teach me?
+A: DevOps and MLOps.
+
+Q: What learning format works well for me?
+A: Visual explanations, diagrams, quizzes, examples and simple analogies.
+
+Q: What kind of learner am I?
+A: I am strongly visual and learn well when complicated ideas are converted into intuitive explanations.
+
+==================================================
+ROOM 15 — TIMELINE ARCHIVE
+==================================================
+
+Exact dates are not available for all events, so do NOT invent dates.
+
+Store these initially as undated/recent events:
+
+- Started B.Tech in Mechanical Engineering at Vignan Institute of Technology and Science.
+- Reached final year of B.Tech.
+- Secured an internship and began working there.
+- Worked on a PLC industrial-automation internship project.
+- Worked on a grocery / quick-commerce project for an Australian client.
+- Built a self-improving autonomous-agent system.
+- Participated in multiple hackathons.
+- Learned that strong presentation and communication are essential in hackathons.
+- Built an AI observability / incident-response project.
+- Began developing AIRA — Autonomy In Real Applications.
+- Began studying DevOps and MLOps.
+- Attended a Microsoft-related technology event.
+- Planned a Delhi trip.
+- Currently aiming to raise CGPA from approximately 8.8 to above 9.
+
+When exact dates become available, allow AIRA to update these timeline memories.
+
+==================================================
+MEMORY RETRIEVAL RULES
+==================================================
+
+When the user asks a question:
+
+1. Convert the question into a semantic query.
+2. Retrieve the most relevant memories.
+3. Prefer highly relevant memories over simply retrieving many memories.
+4. Answer only using the retrieved memories.
+5. Never fabricate missing personal information.
+6. Show the memory references used.
+7. If memories conflict, explicitly mention the conflict.
+8. Allow the user to correct a memory.
+9. Keep the previous version in an audit/history field if possible.
+10. Allow memories to be marked:
+   - active
+   - outdated
+   - uncertain
+   - superseded
+
+==================================================
+MEMORY PALACE VISUAL DESIGN
+==================================================
+
+Create a visually understandable Memory Palace.
+
+Main screen:
+A central palace/lobby with rooms surrounding it.
+
+Suggested rooms and icons:
+
+🏛 Lobby / Identity
+🎓 Academic Room
+💼 Career Room
+🧪 Projects Lab
+🔐 Decision Vault
+👥 People Room
+💻 Developer Workspace
+🤖 AI Preferences
+🎯 Goals Observatory
+📅 Commitments Room
+⏰ Routine Room
+❤️ Personal Room
+🗺 Places Room
+📚 Learning Library
+📜 Timeline Archive
+
+Each room should contain memory cards.
+
+Example card:
+
+CAREER-003
+
+Target Package
+
+₹24 LPA minimum target
+
+Tags:
+career
+salary
+jobs
+
+Importance:
+High
+
+Clicking the card should open:
+- Full memory
+- Created date
+- Tags
+- Related memories
+- Source
+- Memory ID
+
+==================================================
+QUERY EXPERIENCE
+==================================================
+
+Place a global query bar:
+
+"Ask AIRA about me..."
+
+Example query:
+"What did I learn from losing hackathons?"
+
+Expected response:
+
+"You learned that technical quality alone is not enough. Your previous teams focused heavily on building the product while underinvesting in how clearly it was presented. You now prefer simpler architectures that judges can understand quickly, and you believe presentation, confidence and team participation have a major influence on hackathon outcomes.
+
+References:
+Decision Vault → DECISION-002
+Decision Vault → DECISION-003
+Decision Vault → DECISION-004
+Decision Vault → DECISION-006"
+
+Another query:
+
+"What career am I targeting?"
+
+Expected response:
+
+"You want to move into an AI-focused career, ideally as an AI Engineer or similar AI FTE role. You prefer Hyderabad, currently target approximately ₹24 LPA, and eventually want to move from purely hands-on coding toward management and consulting responsibilities.
+
+References:
+Career Room → CAREER-001
+Career Room → CAREER-002
+Career Room → CAREER-003
+Career Room → CAREER-005"
+
+Another query:
+
+"How should you explain technical topics to me?"
+
+Expected:
+
+"You learn best when explanations are visual, simple and step-by-step. You appreciate detailed explanations when necessary, but dislike unnecessarily long walls of text.
+
+References:
+AI Preferences → PREFERENCE-001
+AI Preferences → PREFERENCE-003
+Learning Library → LEARNING-004"
+
+Another query:
+
+"What should I focus on right now?"
+
+AIRA may combine relevant memories but should make it clear that this is an inference.
+
+Example:
+
+"Based on your currently stored priorities, your strongest near-term areas are:
+1. Health and fitness.
+2. Completing your current academic/project commitments.
+3. Building income-producing opportunities and AI projects.
+
+You also have two hackathons, a Delhi trip, two projects and November academics approaching.
+
+This is an inference based on your stored memories rather than an explicitly saved priority order.
+
+References:
+Lobby → IDENTITY-009
+Goals Observatory → GOAL-001
+Goals Observatory → GOAL-002
+Commitments Room → COMMITMENT-001"
+
+==================================================
+IMPORTANT SAFETY / ACCURACY REQUIREMENT
+==================================================
+
+The Memory Palace should distinguish between:
+
+FACT:
+Directly stated by the user.
+
+INFERENCE:
+A conclusion generated from multiple facts.
+
+UNKNOWN:
+Information that does not exist.
+
+Never present inference as stored fact.
+
+For example:
+
+Stored fact:
+"Charan targets ₹24 LPA."
+
+Allowed inference:
+"Because Charan targets ₹24 LPA and major MNCs, high-paying AI roles may align with his career goals."
+
+The second statement must be labeled as an inference.
+
+Do not store passwords, OTPs, API keys, banking credentials or other secrets.
+
+Build the Memory Palace around the above seed data.

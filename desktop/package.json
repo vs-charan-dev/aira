@@ -1,0 +1,8 @@
+{
+  "name": "aira-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": { "start": "electron .", "test": "node --test tests/*.cjs" },
+  "devDependencies": { "electron": "^42.0.0" }
+}

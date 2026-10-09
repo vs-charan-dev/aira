@@ -1,0 +1,148 @@
+import { memo, useRef, useEffect } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { Detailed } from '@react-three/drei';
+import { gsap } from 'gsap';
+import type { Group, Mesh } from 'three';
+import { useEnrichmentStore } from '../../stores/enrichmentStore';
+
+interface CrystalOrbProps {
+  position: [number, number, number];
+  color?: string;
+  /** artifactId — when provided, auto-pulses when a new enrichment arrives */
+  artifactId?: string;
+  /** Override pulse manually (useful when artifactId is unknown) */
+  pulsing?: boolean;
+  hovered?: boolean;
+  onClick?: () => void;
+}
+
+const ORB_RADIUS = 0.3;
+const FLOAT_SPEED = 1.1;
+const ORBIT_RADIUS = 0.5;
+const ORBIT_SPEED = 1.4;
+const PARTICLE_COUNT = 6;
+
+// Pre-computed once at module level — depends only on the constant above
+const PARTICLE_ANGLES = Array.from({ length: PARTICLE_COUNT }, (_, i) =>
+  (i / PARTICLE_COUNT) * Math.PI * 2,
+);
+
+export const CrystalOrb = memo(function CrystalOrb({
+  position,
+  color = '#9B59B6',
+  artifactId,
+  pulsing = false,
+  hovered = false,
+  onClick,
+}: CrystalOrbProps) {
+  const newIds = useEnrichmentStore((s) => s.newEnrichmentArtifactIds);
+  /** Orb pulses if caller passes pulsing=true OR a new enrichment arrived for this artifact */
+  const isNewEnrichment = artifactId ? newIds.has(artifactId) : false;
+  const shouldPulse = pulsing || isNewEnrichment;
+  const groupRef = useRef<Group>(null);
+  const orbRef = useRef<Mesh>(null);
+  const particlesRef = useRef<Group>(null);
+  const timeRef = useRef(Math.random() * Math.PI * 2);
+
+  useFrame((_, delta) => {
+    if (!groupRef.current) return;
+    timeRef.current += delta * FLOAT_SPEED;
+
+    // Orb slow spin
+    if (orbRef.current) {
+      orbRef.current.rotation.y += delta * 0.4;
+      orbRef.current.rotation.x += delta * 0.15;
+    }
+
+    // Orbit particles around the orb
+    if (particlesRef.current) {
+      particlesRef.current.rotation.y += delta * ORBIT_SPEED;
+      particlesRef.current.rotation.x += delta * ORBIT_SPEED * 0.5;
+    }
+
+    // Pulsing effect when enrichment arrives
+    if (shouldPulse && orbRef.current) {
+      const scale = 1 + Math.sin(timeRef.current * 4) * 0.1;
+      orbRef.current.scale.setScalar(scale);
+    }
+  });
+
+  useEffect(() => {
+    if (!groupRef.current) return;
+    gsap.to(groupRef.current.scale, { x: hovered ? 1.2 : 1, y: hovered ? 1.2 : 1, z: hovered ? 1.2 : 1, duration: 0.2 });
+  }, [hovered]);
+
+  return (
+    // T155: LOD — full detail < 10 units, simplified 10–25 units, hidden > 25 units
+    <Detailed distances={[0, 10, 25]} position={position}>
+      {/* LOD 0: Full detail — orb + inner glow + particles + light (within 10 units) */}
+      <group ref={groupRef}>
+        {/* Main orb */}
+        <mesh
+          ref={orbRef}
+          onClick={onClick}
+        >
+          <icosahedronGeometry args={[ORB_RADIUS, 2]} />
+          <meshStandardMaterial
+            color={color}
+            emissive={color}
+            emissiveIntensity={0.5}
+            roughness={0.05}
+            metalness={0.8}
+            opacity={0.85}
+            transparent
+          />
+        </mesh>
+
+        {/* Inner glow core */}
+        <mesh>
+          <sphereGeometry args={[ORB_RADIUS * 0.55, 16, 16]} />
+          <meshBasicMaterial
+            color={color}
+            opacity={0.4}
+            transparent
+            depthWrite={false}
+          />
+        </mesh>
+
+        {/* Orbiting particles */}
+        <group ref={particlesRef}>
+          {PARTICLE_ANGLES.map((angle, i) => (
+            <mesh
+              key={i}
+              position={[
+                Math.cos(angle) * ORBIT_RADIUS,
+                Math.sin(angle * 0.5) * ORBIT_RADIUS * 0.4,
+                Math.sin(angle) * ORBIT_RADIUS,
+              ]}
+            >
+              <sphereGeometry args={[0.025, 6, 6]} />
+              <meshBasicMaterial color={color} />
+            </mesh>
+          ))}
+        </group>
+
+        <pointLight color={color} intensity={0.8} distance={2} decay={2} />
+      </group>
+
+      {/* LOD 1: Mid-range — orb only, no particles or inner glow (10–25 units) */}
+      <group>
+        <mesh onClick={onClick}>
+          <icosahedronGeometry args={[ORB_RADIUS, 1]} />
+          <meshStandardMaterial
+            color={color}
+            emissive={color}
+            emissiveIntensity={0.3}
+            roughness={0.1}
+            metalness={0.6}
+            opacity={0.85}
+            transparent
+          />
+        </mesh>
+      </group>
+
+      {/* LOD 2: Far — invisible placeholder (> 25 units) */}
+      <group />
+    </Detailed>
+  );
+});

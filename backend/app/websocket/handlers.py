@@ -1,0 +1,590 @@
+"""WebSocket message router.
+
+Dispatches incoming messages to the correct handler based on `type`.
+All handlers receive (user_id, message_dict) and send responses via the
+shared ConnectionManager.
+
+Per websocket.md client→server message types:
+  auth            → handled before this router (in auth.py)
+  capture_start   → start a capture session
+  video_frame     → stream JPEG frames to Gemini Live (1fps)
+  capture_end     → finalize capture session
+  artifact_click  → trigger artifact narration     [T094, T097]
+  request_connection → request a semantic corridor between rooms
+  ping            → heartbeat
+  live_session_start → open persistent Gemini Live session with tool calling
+  audio_chunk     → stream PCM audio to the live session
+  live_session_end → close the live session
+"""
+
+import asyncio
+import base64
+import json
+import logging
+import re
+import uuid
+from typing import Any
+
+from fastapi import WebSocket
+
+from app.agents import capture_agent as capture_agent_module
+from app.agents import narrator_agent as narrator_agent_module
+from app.agents.capture_agent import CaptureAgent
+from app.models.capture_session import SessionStatus
+from app.services import capture_service
+from app.agents.recall_agent import recall_agent
+from app.websocket.manager import manager
+from app.core.usage import usage_scope
+from app.websocket.responses import (
+    broadcast_palace_update,
+    send_capture_ack,
+    send_capture_complete,
+)
+
+logger = logging.getLogger(__name__)
+
+_NON_ASCII_RE = re.compile(r"[^\x00-\x7F]+")
+
+
+def _clean_text(text: str) -> str:
+    """Strip non-ASCII characters so only English letters and symbols reach the frontend."""
+    return _NON_ASCII_RE.sub("", text).strip()
+
+
+# Message handlers registry: type → async callable(user_id, message, websocket)
+_HANDLERS: dict[str, Any] = {}
+
+
+def _handler(msg_type: str):
+    """Decorator to register a message handler."""
+    def decorator(fn):
+        _HANDLERS[msg_type] = fn
+        return fn
+    return decorator
+
+
+async def _require_gemini_key(user_id: str) -> str | None:
+    """Return the user's Gemini API key, or None if not set."""
+    from app.services.user_settings_service import get_user_gemini_key
+    return await get_user_gemini_key(user_id)
+
+
+async def _send_no_key_error(user_id: str) -> None:
+    await manager.send(user_id, {
+        "type": "error",
+        "code": "NO_GEMINI_KEY",
+        "message": "Add your Gemini API key in Settings before using this feature.",
+        "retryable": False,
+    })
+
+
+@_handler("ping")
+async def handle_ping(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    import time
+    await manager.send(user_id, {"type": "pong", "serverTime": int(time.time() * 1000)})
+
+
+@_handler('desktop_action_result')
+async def handle_desktop_action_result(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    from app.services.desktop_action_service import resolve_desktop_action
+    resolve_desktop_action(user_id, msg, websocket)
+
+@_handler('stop_all_tasks')
+async def handle_stop_all_tasks(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    from app.services.task_supervisor import get_supervisor
+    await get_supervisor().cancel_all(user_id)
+
+@_handler('desktop_action_progress')
+async def handle_desktop_progress(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    from app.services.desktop_action_service import resolve_desktop_progress
+    await resolve_desktop_progress(user_id, msg, websocket)
+
+
+@_handler("capture_start")
+async def handle_capture_start(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """T041 — Start a capture session and spin up a CaptureAgent."""
+    session_id: str = msg.get("sessionId", "")
+    source_type: str = msg.get("sourceType", "webcam")
+    capture_pace: str = msg.get("capturePace", "balanced")
+
+    if not session_id:
+        await manager.send(user_id, {
+            "type": "error", "code": "INVALID_REQUEST",
+            "message": "capture_start requires sessionId", "retryable": False,
+        })
+        return
+
+    gemini_api_key = await _require_gemini_key(user_id)
+    if not gemini_api_key:
+        await _send_no_key_error(user_id)
+        return
+
+    # Backend enforcement: frontend input shutdown alone does not close Gemini.
+    await recall_agent.close_session(user_id)
+    await capture_agent_module.stop_user_agents(user_id)
+
+    # Persist session in SQLite
+    await capture_service.start_session(user_id, session_id, source_type)
+
+    # Build extraction callback — fires on every concept Gemini extracts
+    async def on_extraction(event):
+        try:
+            await send_capture_ack(user_id, session_id, event)
+        except Exception:
+            logger.exception("send_capture_ack failed: userId=%s sessionId=%s", user_id, session_id)
+        # Broadcast palace_update for the newly created artifact/room
+        if event.categorization:
+            cat = event.categorization
+            rooms_added = [cat.room] if cat.action == "suggested_new" else []
+            # Create a lobby door for any room auto-created by categorize_and_store
+            lobby_doors_added = []
+            if cat.action == "suggested_new":
+                try:
+                    from app.services.room_service import add_lobby_door
+                    door = await add_lobby_door(user_id, cat.room.id)
+                    lobby_doors_added = [door]
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "add_lobby_door failed for userId=%s roomId=%s", user_id, cat.room.id
+                    )
+            await broadcast_palace_update(
+                user_id,
+                rooms_added=rooms_added,
+                artifacts_added=[cat.artifact],
+                lobby_doors_added=lobby_doors_added,
+            )
+
+    async def on_audio(audio_bytes: bytes) -> None:
+        await manager.send(user_id, {
+            "type": "capture_audio",
+            "data": base64.b64encode(audio_bytes).decode(),
+        })
+
+    async def on_text(text: str) -> None:
+        await manager.send(user_id, {
+            "type": "capture_text",
+            "text": _clean_text(text),
+        })
+
+    async def on_user_text(text: str) -> None:
+        await manager.send(user_id, {
+            "type": "capture_user_text",
+            "text": _clean_text(text),
+        })
+
+    async def on_close() -> None:
+        logger.info("CaptureAgent requested closure via tool: userId=%s sessionId=%s", user_id, session_id)
+        await handle_capture_end(user_id, {"sessionId": session_id}, websocket)
+
+    display_name = manager.get_display_name(user_id)
+    agent = CaptureAgent(user_id, session_id, on_extraction, on_audio, on_text, on_user_text, on_close, display_name=display_name, capture_pace=capture_pace, gemini_api_key=gemini_api_key, allow_speech_interruption=msg.get('allowSpeechInterruption') is True)
+    try:
+        await agent.start()
+    except Exception:
+        await capture_service.end_session(user_id, session_id, SessionStatus.failed)
+        await manager.send(user_id, {'type': 'error', 'code': 'CAPTURE_SESSION_FAILED',
+            'message': 'Capture could not connect. Check your key, model access, quota, and internet.', 'retryable': True})
+        return
+    capture_agent_module.register_agent(session_id, agent)
+    await manager.send(user_id, {'type': 'capture_session_started', 'sessionId': session_id})
+    logger.info("capture_start: userId=%s sessionId=%s", user_id, session_id)
+
+
+@_handler("video_frame")
+async def handle_video_frame(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Decode base64 JPEG frame and forward to the active CaptureAgent as video input."""
+    session_id: str = msg.get("sessionId", "")
+    data_b64: str = msg.get("data", "")
+
+    agent = capture_agent_module.get_agent(session_id)
+    if agent is None:
+        return
+
+    try:
+        jpeg_bytes = base64.b64decode(data_b64)
+        await agent.send_frame(jpeg_bytes)
+    except Exception:
+        logger.exception("video_frame decode/send error: sessionId=%s", session_id)
+
+
+@_handler("capture_voice_chunk")
+async def handle_capture_voice_chunk(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Forward user's mic audio (PCM) to the capture agent as conversational input."""
+    session_id: str = msg.get("sessionId", "")
+    data_b64: str = msg.get("data", "")
+
+    agent = capture_agent_module.get_agent(session_id)
+    if agent is None:
+        return
+
+    try:
+        audio_bytes = base64.b64decode(data_b64)
+        await agent.send_voice(audio_bytes)
+    except Exception:
+        logger.exception("capture_voice_chunk error: sessionId=%s", session_id)
+
+
+@_handler("capture_screenshot_response")
+async def handle_capture_screenshot_response(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Frontend returns a base64-encoded JPEG frame for the pending take_screenshot tool call."""
+    session_id: str = msg.get("sessionId", "")
+    image_b64: str = msg.get("data", "")
+    agent = capture_agent_module.get_agent(session_id)
+    if agent:
+        agent.resolve_screenshot(image_b64)
+    else:
+        logger.warning("capture_screenshot_response: no active agent for sessionId=%s", session_id)
+
+
+@_handler("capture_end")
+async def handle_capture_end(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """T043 — Stop CaptureAgent, finalize session, send capture_complete."""
+    session_id: str = msg.get("sessionId", "")
+
+    agent = capture_agent_module.get_agent(session_id)
+    if agent is None or agent.user_id != user_id:
+        logger.warning("capture_end: no active agent for sessionId=%s", session_id)
+        return
+
+    # Stop agent and collect all extractions
+    extractions = await agent.stop()
+    capture_agent_module.unregister_agent(session_id)
+
+    # Finalize session in SQLite
+    session = await capture_service.end_session(user_id, session_id, SessionStatus.completed)
+
+    # Gather artifact/room data from all extractions
+    artifact_ids: list[str] = []
+    room_ids: set[str] = set()
+    new_room_ids: list[str] = []
+    rich_artifacts: list[dict] = []
+    rooms_seen: dict[str, dict] = {}  # room_id → room dict
+
+    for ev in extractions:
+        if ev.categorization:
+            cat = ev.categorization
+            artifact_ids.append(cat.artifact.id)
+            room_ids.add(cat.room.id)
+            is_new_room = cat.action == "suggested_new"
+            if is_new_room:
+                new_room_ids.append(cat.room.id)
+            rich_artifacts.append({
+                "id": cat.artifact.id,
+                "title": ev.concept_title,
+                "type": ev.concept_type,
+                "roomId": cat.room.id,
+                "roomName": cat.room.name,
+                "isNewRoom": is_new_room,
+            })
+            if cat.room.id not in rooms_seen:
+                rooms_seen[cat.room.id] = {
+                    "id": cat.room.id,
+                    "name": cat.room.name,
+                    "isNew": is_new_room,
+                    "artifactCount": 0,
+                }
+            rooms_seen[cat.room.id]["artifactCount"] += 1
+
+    # Count only extractions that were actually saved (categorization set).
+    # Extractions with categorization=None were failures (e.g. categorize_and_store
+    # exception) and should not inflate the count or generate a misleading narrative.
+    concept_count = len(artifact_ids) or (session.conceptCount if session else 0)
+
+    # Generate a Gemini narrative summary (best-effort, non-blocking)
+    narrative: str | None = None
+    if concept_count > 0 and msg.get('reason') != 'mode_switch':
+        try:
+            _narrative_key = agent._gemini_api_key if agent else None
+            narrative = await asyncio.wait_for(
+                _generate_session_narrative(
+                    concept_count=concept_count,
+                    rooms=list(rooms_seen.values()),
+                    artifacts=rich_artifacts,
+                    duration_seconds=session.durationSeconds if session else None,
+                    api_key=_narrative_key,
+                ),
+                timeout=12.0,
+            )
+        except (asyncio.TimeoutError, Exception):
+            logger.warning("Session narrative generation failed or timed out for userId=%s", user_id)
+
+    await send_capture_complete(
+        user_id, session_id,
+        artifact_ids=artifact_ids,
+        room_ids=list(room_ids),
+        new_room_ids=new_room_ids,
+        concept_count=concept_count,
+        artifacts=rich_artifacts,
+        rooms=list(rooms_seen.values()),
+        duration_seconds=session.durationSeconds if session else None,
+        source_type=session.sourceType.value if session else None,
+        narrative=narrative,
+    )
+    logger.info("capture_end: userId=%s sessionId=%s concepts=%d", user_id, session_id, concept_count)
+
+    # Send session ended message to frontend
+    await manager.send(user_id, {
+        "type": "capture_session_ended",
+        "sessionId": session_id,
+    })
+
+
+
+
+
+@_handler("artifact_click")
+async def handle_artifact_click(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """T094 + T097 — Narrate an artifact and send artifact_recall WebSocket response."""
+    artifact_id: str = msg.get("artifactId", "")
+    room_id: str = msg.get("roomId", "")
+
+    if not artifact_id or not room_id:
+        await manager.send(user_id, {
+            "type": "error", "code": "INVALID_REQUEST",
+            "message": "artifact_click requires artifactId and roomId", "retryable": False,
+        })
+        return
+
+    logger.info("artifact_click: userId=%s artifactId=%s roomId=%s", user_id, artifact_id, room_id)
+
+    # US3-v2 integration: If a live session is active, updated its context instead of starting a new narration
+    if recall_agent.has_session(user_id):
+        logger.info("artifact_click: session active, updating context for userId=%s", user_id)
+        await recall_agent.update_context(user_id, room_id, artifact_id)
+        
+        # We still send the artifact_recall message so the frontend opens the UI modal,
+        # but we skip the voice_audio so Gemini Live handles the narration instead.
+        from app.services.artifact_service import get_artifact
+        artifact = await get_artifact(user_id, room_id, artifact_id)
+        
+        await manager.send(user_id, {
+            "type": "artifact_recall",
+            "artifactId": artifact_id,
+            "content": {
+                "voiceNarration": None,
+                "summary": artifact.summary if artifact else "",
+                "generatedDiagrams": [],
+                "relatedArtifacts": [],
+            },
+        })
+        return
+
+    try:
+        gemini_api_key = await _require_gemini_key(user_id)
+        if not gemini_api_key:
+            await _send_no_key_error(user_id)
+            return
+        result = await narrator_agent_module.narrate_artifact(user_id, artifact_id, room_id, display_name=manager.get_display_name(user_id), gemini_api_key=gemini_api_key)
+    except Exception:
+        logger.exception("narrator_agent failed: userId=%s artifactId=%s", user_id, artifact_id)
+        await manager.send(user_id, {
+            "type": "error", "code": "QUERY_FAILED",
+            "message": "Failed to narrate artifact", "retryable": True,
+        })
+        return
+
+    # Build artifact_recall message per websocket.md §5
+    diagrams = [
+        {"url": d.url, "caption": d.caption}
+        for d in result.diagrams
+    ]
+    voice_ack = base64.b64encode(result.voice_audio).decode() if result.voice_audio else None
+
+    await manager.send(user_id, {
+        "type": "artifact_recall",
+        "artifactId": artifact_id,
+        "content": {
+            "voiceNarration": voice_ack,
+            "summary": result.summary,
+            "generatedDiagrams": diagrams,
+            "relatedArtifacts": result.related_artifacts,
+        },
+    })
+
+
+# ── US3-v2: Live streaming voice handlers ─────────────────────────────────────
+
+
+@_handler("live_session_start")
+async def handle_live_session_start(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Open a persistent Gemini Live session with tool calling for navigation/highlight/diagrams."""
+    context: dict = dict(msg.get("context", {}))
+    client_session_id=msg.get('sessionId')
+    if client_session_id is not None:
+        if not isinstance(client_session_id,str) or not re.fullmatch(r'[a-zA-Z0-9-]{1,80}',client_session_id): return
+        context['clientSessionId']=client_session_id
+
+    async def on_audio(audio_b64: str) -> None:
+        await manager.send(user_id, {"type": "live_audio", "audioChunk": audio_b64})
+
+    async def on_text(text: str) -> None:
+        await manager.send(user_id, {"type": "live_text", "text": _clean_text(text)})
+
+    async def on_user_text(text: str) -> None:
+        await manager.send(user_id, {"type": "live_user_text", "text": _clean_text(text)})
+
+    async def on_interrupted() -> None:
+        await manager.send(user_id, {"type": "live_interrupted"})
+
+    async def on_turn_complete() -> None:
+        await manager.send(user_id, {"type": "live_turn_complete"})
+
+    async def on_tool_activity(tool_name: str, payload: dict) -> None:
+        await manager.send(user_id, {
+            "type": "live_tool_call",
+            "tool": tool_name,
+            "label": payload.get("label", tool_name),
+            "payload": {k: v for k, v in payload.items() if k != "label"},
+        })
+
+    gemini_api_key = await _require_gemini_key(user_id)
+    if not gemini_api_key:
+        await _send_no_key_error(user_id)
+        return
+
+    try:
+        await capture_agent_module.stop_user_agents(user_id)
+        await recall_agent.start_session(
+            user_id=user_id,
+            context=context,
+            display_name=manager.get_display_name(user_id),
+            on_audio=on_audio,
+            on_text=on_text,
+            on_interrupted=on_interrupted,
+            on_turn_complete=on_turn_complete,
+            on_user_text=on_user_text,
+            on_tool_activity=on_tool_activity,
+            gemini_api_key=gemini_api_key,
+        )
+        await manager.send(user_id, {"type": "live_session_started",'sessionId':client_session_id})
+    except Exception:
+        logger.exception("live_session_start failed: userId=%s", user_id)
+        await manager.send(user_id, {
+            "type": "error", "code": "LIVE_SESSION_FAILED",
+            "sessionId": client_session_id,
+            "message": "Failed to start live session", "retryable": True,
+        })
+
+
+@_handler("audio_chunk")
+async def handle_audio_chunk(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Forward a PCM audio chunk to the active Gemini Live session."""
+    data_b64: str = msg.get("data", "")
+    if not data_b64:
+        return
+    if msg.get('sessionId') and not recall_agent.matches_session(user_id,msg['sessionId']): return
+    try:
+        audio_bytes = base64.b64decode(data_b64)
+        await recall_agent.send_audio(user_id, audio_bytes)
+    except Exception:
+        logger.exception("audio_chunk error: userId=%s", user_id)
+
+
+@_handler('live_session_status')
+async def handle_live_session_status(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    ident=msg.get('sessionId')
+    if not isinstance(ident,str) or not re.fullmatch(r'[a-zA-Z0-9-]{1,80}',ident): return
+    active=recall_agent.matches_session(user_id,ident) and recall_agent.has_session(user_id)
+    await manager.send(user_id,{'type':'live_session_status','sessionId':ident,'active':active})
+    if not active and recall_agent.matches_session(user_id,ident):
+        await recall_agent.close_session(user_id)
+
+
+@_handler('screen_view_result')
+async def handle_screen_view_result(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    from app.services.screen_view_service import resolve_screen_view
+    resolve_screen_view(user_id, msg, websocket)
+
+@_handler("live_context_update")
+async def handle_live_context_update(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Inject updated room artifacts into the live session when the user enters a new room."""
+    room_id: str | None = msg.get("roomId") or None
+    artifact_id: str | None = msg.get("artifactId") or None
+    await recall_agent.update_context(user_id, room_id, artifact_id)
+
+
+@_handler("live_session_end")
+async def handle_live_session_end(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Close the persistent Gemini Live session."""
+    await recall_agent.close_session(user_id)
+    logger.info("live_session_end: userId=%s", user_id)
+
+
+async def _generate_session_narrative(
+    concept_count: int,
+    rooms: list[dict],
+    artifacts: list[dict],
+    duration_seconds: float | None,
+    api_key: str | None = None,
+) -> str:
+    """Generate a 2-sentence Gemini narrative for the capture session summary."""
+    from app.core.gemini import STANDARD_MODEL, get_genai_client
+
+    new_rooms = [r for r in rooms if r.get("isNew")]
+    # Collect up to 3 distinct topic names from room names
+    topics = list(dict.fromkeys(r.get("name", "") for r in rooms if r.get("name")))[:3]
+    duration_str = f"~{round(duration_seconds / 60)} minutes" if duration_seconds else "unknown duration"
+
+    prompt = (
+        f"Write exactly 2 sentences summarizing a memory capture session in second person.\n\n"
+        f"Stats:\n"
+        f"- {concept_count} memor{'y' if concept_count == 1 else 'ies'} captured\n"
+        f"- {len(rooms)} room{'s' if len(rooms) != 1 else ''} touched"
+        f" ({len(new_rooms)} new)\n"
+        f"- Topics: {', '.join(topics) or 'various'}\n"
+        f"- Duration: {duration_str}\n\n"
+        f"Start the first sentence with 'Today you captured…' or similar. "
+        f"Reference the specific topics and rooms. Be warm and specific, not generic. "
+        f"No bullet points, just 2 flowing sentences."
+    )
+
+    client = get_genai_client(api_key)
+    response = await client.aio.models.generate_content(model=STANDARD_MODEL, contents=prompt)
+    return (response.text or "").strip()
+
+
+@_handler("request_connection")
+async def handle_request_connection(user_id: str, msg: dict, websocket: WebSocket) -> None:
+    """Request a semantic corridor between two rooms. Full logic in Phase 5."""
+    logger.info(
+        "request_connection: userId=%s from=%s to=%s",
+        user_id, msg.get("fromRoomId"), msg.get("toRoomId"),
+    )
+    # TODO: delegate to memory_architect
+
+
+async def route_message(user_id: str, raw: str, websocket: WebSocket) -> None:
+    """Parse a raw JSON string and dispatch to the appropriate handler."""
+    try:
+        msg: dict = json.loads(raw)
+    except json.JSONDecodeError:
+        await manager.send(
+            user_id,
+            {"type": "error", "code": "INVALID_REQUEST", "message": "Message must be valid JSON", "retryable": False},
+        )
+        return
+
+    msg_type: str = msg.get("type", "")
+    handler = _HANDLERS.get(msg_type)
+
+    if handler is None:
+        logger.warning("Unknown message type '%s' from userId=%s", msg_type, user_id)
+        await manager.send(
+            user_id,
+            {"type": "error", "code": "INVALID_REQUEST", "message": f"Unknown message type: {msg_type!r}", "retryable": False},
+        )
+        return
+
+    try:
+        feature = ('capture' if msg_type.startswith(('capture_', 'video_', 'screenshot_')) else
+                   'recall' if msg_type.startswith(('live_', 'audio_')) else
+                   'narration' if msg_type == 'artifact_click' else 'other')
+        with usage_scope(user_id, feature, msg.get('sessionId') or uuid.uuid4().hex):
+            await handler(user_id, msg, websocket)
+    except Exception:
+        logger.exception("Handler error for type=%s userId=%s", msg_type, user_id)
+        await manager.send(
+            user_id,
+            {"type": "error", "code": "INTERNAL_ERROR", "message": "Internal server error", "retryable": True},
+        )

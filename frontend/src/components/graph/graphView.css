@@ -1,0 +1,19 @@
+.aira-palace-top-nav{position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:110;display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.94);padding:5px;border:1px solid #e8e4ef;border-radius:14px;box-shadow:0 4px 18px #20122f12;backdrop-filter:blur(12px)}
+.aira-graph-button,.aira-palace-top-nav a{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 14px;border:0;border-radius:9px;color:#655077;background:transparent;font:500 12px Inter,system-ui,sans-serif;text-decoration:none;white-space:nowrap;cursor:pointer}
+.aira-graph-button:hover,.aira-palace-top-nav a:hover{background:#f0edf7}
+.aira-palace-top-nav .aira-graph-button{background:#f0edf7}
+.aira-graph-button:focus-visible,.aira-graph-return:focus-visible{outline:2px solid #8071ba;outline-offset:2px}
+.aira-graph-dialog{position:fixed;inset:0;max-width:none;max-height:none;width:100vw;height:100dvh;margin:0;padding:0;border:0;background:#fff;color:#373342;overflow:hidden}
+.aira-graph-dialog::backdrop{background:#fff}
+.aira-graph-header{height:62px;padding:0 26px;display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #eeedf1;font-family:Inter,system-ui,sans-serif}
+.aira-graph-heading{display:flex;align-items:center;gap:12px;white-space:nowrap}
+.aira-graph-heading>span:first-child{font-size:15px;letter-spacing:2px;font-weight:650}
+.aira-graph-divider{width:1px;height:17px;background:#e6e3eb}
+.aira-graph-heading h2{font-size:13px;font-weight:500;margin:0;color:#756d83}
+.aira-graph-heading svg{color:#8c829d}
+.aira-graph-return{display:flex;align-items:center;gap:8px;background:#f5f3f8;border:1px solid #e8e4ef;border-radius:8px;padding:9px 12px;color:#655077;font:500 12px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.aira-graph-return:hover{background:#eae6f3}
+.aira-graph-frame{display:block;width:100%;height:calc(100% - 62px);border:0;background:#fff}
+.aira-memory-header-actions{display:flex;align-items:center;gap:22px}
+@media(max-width:740px){.aira-palace-top-nav{top:76px}.aira-graph-header{padding:0 14px}.aira-graph-heading{gap:8px}.aira-graph-return{font-size:11px;padding:9px}.aira-memory-header-actions{gap:10px}.aira-memory-header-actions .aira-graph-button{padding:8px;font-size:11px}}
+@media(max-width:430px){.aira-memory-header-actions{flex-direction:column;align-items:flex-end;gap:4px}.aira-graph-heading>span:first-child{font-size:13px}.aira-graph-heading h2{font-size:12px}.aira-graph-heading svg{display:none}}
